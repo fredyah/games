@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>My Mini Games</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #0b0f1a;
+      color: #e6e6e6;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans TC", sans-serif;
+    }
+    .wrap {
+      width: min(860px, 92vw);
+      padding: 28px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.06);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { margin: 0 0 18px; opacity: 0.9; line-height: 1.6; }
+    .card {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      padding: 18px;
+      border-radius: 14px;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .badge {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,0.08);
+      font-weight: 700;
+      font-size: 18px;
+    }
+    .meta { flex: 1; }
+    .meta .title { font-size: 18px; font-weight: 650; margin-bottom: 4px; }
+    .meta .desc { font-size: 14px; opacity: 0.85; }
+    a.play {
+      display: inline-block;
+      text-decoration: none;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: #ffffff;
+      color: #111;
+      font-weight: 700;
+      transition: transform 120ms ease, opacity 120ms ease;
+      white-space: nowrap;
+    }
+    a.play:hover { transform: translateY(-1px); opacity: 0.92; }
+    .hint {
+      margin-top: 14px;
+      font-size: 13px;
+      opacity: 0.75;
+    }
+    code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 8px; }
+  </style>
+</head>
+
+<body>
+  <main class="wrap">
+    <h1>My Mini Games</h1>
+    <p>
+      Welcome. This is the landing page of my GitHub Pages site.
+      Click the button below to open the game.
+    </p>
+
+    <section class="card">
+      <div class="badge">🎮</div>
+      <div class="meta">
+        <div class="title">Nose Breakout</div>
+        <div class="desc">Breakout controlled by your nose (camera required).</div>
+      </div>
+
+      <!-- 重點：連到 repo-root/game/ -->
+      <a class="play" href="./game/">Play Game</a>
+    </section>
+
+    <div class="hint">
+      Path note: <code>./game/</code> maps to <code>repo-root/game/index.html</code>.
+    </div>
+  </main>
+</body>
+</html>
