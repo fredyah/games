@@ -6,6 +6,12 @@
  * - Press [R] restart, [C] toggle camera overlay darkness
  */
 
+// Brick colors (palette)
+const BRICK_PALETTE = [
+  "#ff595e", "#ffca3a", "#8ac926", "#1982c4", "#6a4c93",
+  "#ff924c", "#c77dff", "#4cc9f0", "#f72585", "#90be6d"
+];
+
 let video;
 let bodyPose;
 let poses = [];
@@ -141,7 +147,8 @@ function initBricks() {
     for (let c = 0; c < cols; c++) {
       const x = brickSideMargin + c * (brickW + brickPadding);
       const y = brickTopOffset + r * (brickH + brickPadding);
-      bricks.push({ x, y, w: brickW, h: brickH, alive: true });
+      const col = color(random(BRICK_PALETTE)); // 從調色盤隨機挑
+      bricks.push({ x, y, w: brickW, h: brickH, alive: true, col });
     }
   }
 }
@@ -182,8 +189,8 @@ function draw() {
   drawStateHints();
 
   if (noseXSmoothed != null) {
-    stroke(0, 255, 0);
-    strokeWeight(2);
+    stroke(255, 15);     // 白色 + 透明度 (0~255)
+    strokeWeight(8);      // 線條更粗
     line(noseXSmoothed, 0, noseXSmoothed, height);
     noStroke();
   }
@@ -300,7 +307,7 @@ function drawBricks() {
   noStroke();
   for (const b of bricks) {
     if (!b.alive) continue;
-    fill(210);
+    fill(b.col);
     rect(b.x, b.y, b.w, b.h, 6);
   }
 }
