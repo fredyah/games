@@ -24,7 +24,7 @@ const NOSE_LERP = 0.18;     // smoothing factor
 let paddle, ball;
 let bricks = [];
 let rows = 6;
-let cols = 10;
+let cols = 10;              // 會在 applyLayout() 中依螢幕寬度自動調整
 let brickPadding = 8;
 let brickTopOffset = 70;
 let brickSideMargin = 30;
@@ -33,17 +33,17 @@ let score = 0;
 let lives = 3;
 let gameState = "ready"; // ready | playing | gameover
 
+// Responsive bricks config
+const BRICK_H = 22;
+const BRICK_W_MIN = 55;     // 每塊磚最小寬度（避免太小）
+const BRICK_W_MAX = 120;    // 每塊磚最大寬度（避免太大）
+const COLS_MIN = 6;
+const COLS_MAX = 14;
+
 function preload() {
   // MoveNet + flipped:true makes L/R align with mirrored feel (like a selfie camera)
   bodyPose = ml5.bodyPose("MoveNet", { flipped: true });
 }
-
-
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  applyLayout();
-}
-
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -55,7 +55,12 @@ function setup() {
   bodyPose.detectStart(video, gotPoses);
 
   resetGame();
-  applyLayout();   // 新增：依螢幕大小重新排版
+  applyLayout(); // 重要：補齊並在初始化後排版與重建磚塊
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  applyLayout(); // 重要：resize 後重建磚塊與更新尺寸
 }
 
 function resetGame() {
@@ -85,11 +90,52 @@ function resetBall() {
   };
 }
 
+/**
+ * 依據螢幕大小做排版：
+ * - paddle 尺寸與位置
+ * - brickSideMargin / brickPadding / brickTopOffset
+ * - cols 動態調整（讓磚塊寬度落在合理區間，並鋪滿整寬度）
+ * - 重新 initBricks()
+ */
+function applyLayout() {
+  // Paddle responsive
+  paddle.w = constrain(width * 0.18, 120, 220);
+  paddle.h = constrain(height * 0.02, 12, 18);
+  paddle.y = height - constrain(height * 0.06, 34, 60);
+  paddle.x = constrain(paddle.x ?? width / 2, paddle.w / 2, width - paddle.w / 2);
+
+  // Brick spacing responsive
+  brickSideMargin = constrain(width * 0.04, 16, 48);
+  brickPadding = constrain(width * 0.01, 6, 12);
+  brickTopOffset = constrain(height * 0.10, 60, 110);
+
+  const usableW = width - brickSideMargin * 2;
+
+  // 根據可用寬度與希望的磚塊寬度區間，動態估算 cols
+  // 目的：讓每塊磚不要太小/太大，同時整排鋪滿 usableW
+  const idealBrickW = constrain(usableW / cols, BRICK_W_MIN, BRICK_W_MAX);
+  let newCols = floor((usableW + brickPadding) / (idealBrickW + brickPadding));
+  newCols = constrain(newCols, COLS_MIN, COLS_MAX);
+  cols = newCols;
+
+  // 重建磚塊（會用新的 cols / padding / margin / width 重新算 brickW）
+  initBricks();
+
+  // 如果不是 playing，球會黏著 paddle；如果正在 playing，做安全限制避免出界
+  if (gameState !== "playing") {
+    ball.x = paddle.x;
+    ball.y = paddle.y - 25;
+  } else {
+    ball.x = constrain(ball.x, ball.r, width - ball.r);
+    ball.y = constrain(ball.y, ball.r, height - ball.r);
+  }
+}
+
 function initBricks() {
   bricks = [];
   const usableW = width - brickSideMargin * 2;
   const brickW = (usableW - (cols - 1) * brickPadding) / cols;
-  const brickH = 22;
+  const brickH = BRICK_H;
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -134,6 +180,7 @@ function draw() {
   drawBall();
   drawHUD();
   drawStateHints();
+
   if (noseXSmoothed != null) {
     stroke(0, 255, 0);
     strokeWeight(2);
@@ -162,7 +209,7 @@ function drawCameraBackground() {
   push();
   if (mirrorCamera) {
     translate(width, 0);
-    scale(-1, 1);           // 這裡就會回到 p5 的 scale()
+    scale(-1, 1);
     image(video, dx, dy, dw, dh);
   } else {
     image(video, dx, dy, dw, dh);
@@ -208,6 +255,8 @@ function updateGame() {
     } else {
       gameState = "ready";
       resetBall();
+      // 重新套用 layout，避免 resize 後 paddle/ball 不一致
+      applyLayout();
     }
     return;
   }
@@ -240,7 +289,7 @@ function updateGame() {
         ball.speed = Math.min(ball.speed + 1, 12);
         gameState = "ready";
         resetBall();
-        initBricks();
+        applyLayout(); // 重要：下一關也要重排一次，確保寬度仍鋪滿
       }
       break;
     }
@@ -304,7 +353,10 @@ function drawStateHints() {
 
 function keyPressed() {
   if (key === ' ' && gameState === "ready") launchBall();
-  if (key === 'r' || key === 'R') resetGame();
+  if (key === 'r' || key === 'R') {
+    resetGame();
+    applyLayout(); // 重新開始後也套用一次排版
+  }
   if (key === 'c' || key === 'C') cameraDim = (cameraDim > 0) ? 0 : 0.25;
 }
 
