@@ -189,9 +189,9 @@ function draw() {
   drawStateHints();
 
   if (noseXSmoothed != null) {
-    stroke(255, 15);     // 白色 + 透明度 (0~255)
+    stroke(255, 40);     // 白色 + 透明度 (0~255)
     strokeWeight(8);      // 線條更粗
-    line(noseXSmoothed, 0, noseXSmoothed, height);
+    line(noseXSmoothed, height / 1.3 - 13, noseXSmoothed, height / 1.3 + 13);
     noStroke();
   }
 }
