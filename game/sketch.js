@@ -38,18 +38,24 @@ function preload() {
   bodyPose = ml5.bodyPose("MoveNet", { flipped: true });
 }
 
-function setup() {
-  createCanvas(900, 600);
 
-  // Camera
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  applyLayout();
+}
+
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+
   video = createCapture(VIDEO, () => {});
   video.size(640, 480);
   video.hide();
 
-  // Start pose detection loop
   bodyPose.detectStart(video, gotPoses);
 
   resetGame();
+  applyLayout();   // 新增：依螢幕大小重新排版
 }
 
 function resetGame() {
