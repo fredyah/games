@@ -19,12 +19,33 @@ let poses = [];
 // Camera rendering options
 let cameraDim = 0.25;        // 0~1, dark overlay to make game visible (press C to toggle)
 let mirrorCamera = true;     // mirror the camera display for natural control
-
+let camYStretch = 1.15;
 // Nose tracking
 let noseX = null;           // mapped to canvas X
 let noseXSmoothed = null;
 const NOSE_CONFIDENCE_MIN = 0.25;
 const NOSE_LERP = 0.18;     // smoothing factor
+
+
+let uiButtons = [];
+let uiScale = 1;
+const UI_PAD = 12;
+
+// Beauty / skin smoothing
+let beautyEnabled = true;
+let beautyBlur = 3;     // 2~6 通常合理
+let beautyMix = 0.55;   // 0~1，越大越像磨皮
+let beautyEveryNFrames = 2; // 降低成本：每 N 帧更新一次模糊結果
+
+let camLayer = null;     // 原始相機緩衝
+let camBlurLayer = null; // 模糊相機緩衝
+let faceVideoEllipse = null; // 臉部框（在 video 座標系）
+
+let beautyLayer = null;      // 存「模糊後」要疊上去的那層（已被遮罩）
+let beautyMaskLayer = null;  // 存橢圓漸層遮罩
+let beautyFeather = 0.28;    // 0~0.6，越大邊緣越柔、擴散越寬
+
+
 
 // Game
 let paddle, ball;
@@ -48,26 +69,49 @@ const COLS_MAX = 14;
 
 function preload() {
   // MoveNet + flipped:true makes L/R align with mirrored feel (like a selfie camera)
-  bodyPose = ml5.bodyPose("MoveNet", { flipped: true });
+  bodyPose = ml5.bodyPose("MoveNet", { flipped: false });
 }
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
-
+  ensureBeautyLayers();
   video = createCapture(VIDEO, () => {});
-  video.size(640, 480);
   video.hide();
+
+  // 等相機 metadata 出來後，拿到真實尺寸再設定 element size（保持比例）
+  video.elt.onloadedmetadata = () => {
+    const vw = video.elt.videoWidth;
+    const vh = video.elt.videoHeight;
+    const targetW = 640;
+    video.size(targetW, Math.round(targetW * (vh / vw)));
+
+    // init beauty buffers with the SAME size as video element
+    camLayer = createGraphics(video.width, video.height);
+    camBlurLayer = createGraphics(video.width, video.height);
+  };
 
   bodyPose.detectStart(video, gotPoses);
 
   resetGame();
-  applyLayout(); // 重要：補齊並在初始化後排版與重建磚塊
+  applyLayout();
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+  ensureBeautyLayers();
   applyLayout(); // 重要：resize 後重建磚塊與更新尺寸
 }
+
+function ensureBeautyLayers() {
+  // 只要 canvas size 改了，就重建同尺寸的 buffer
+  beautyLayer = createGraphics(width, height);
+  beautyMaskLayer = createGraphics(width, height);
+
+  // 初始化清空（避免殘影）
+  beautyLayer.clear();
+  beautyMaskLayer.clear();
+}
+
 
 function resetGame() {
   score = 0;
@@ -135,7 +179,58 @@ function applyLayout() {
     ball.x = constrain(ball.x, ball.r, width - ball.r);
     ball.y = constrain(ball.y, ball.r, height - ball.r);
   }
+  buildUIButtons();
 }
+
+
+
+function buildUIButtons() {
+  uiButtons = [];
+
+  // 依螢幕自動縮放
+  uiScale = constrain(min(width, height) / 520, 0.85, 1.25);
+
+  const btnH = 44 * uiScale;
+  const btnW = 140 * uiScale;
+  const gap = 10 * uiScale;
+  const xRight = width - UI_PAD - btnW;
+  let y = UI_PAD;
+
+  uiButtons.push(makeBtn("beauty", xRight, y, btnW, btnH, () => {
+    beautyEnabled = !beautyEnabled;
+  }));
+  y += btnH + gap;
+
+  uiButtons.push(makeBtn("blur-", xRight, y, (btnW - gap) / 2, btnH, () => {
+    beautyBlur = max(1, beautyBlur - 1);
+  }));
+  uiButtons.push(makeBtn("blur+", xRight + (btnW + gap) / 2, y, (btnW - gap) / 2, btnH, () => {
+    beautyBlur = min(10, beautyBlur + 1);
+  }));
+  y += btnH + gap;
+
+  uiButtons.push(makeBtn("mix-", xRight, y, (btnW - gap) / 2, btnH, () => {
+    beautyMix = max(0, beautyMix - 0.05);
+  }));
+  uiButtons.push(makeBtn("mix+", xRight + (btnW + gap) / 2, y, (btnW - gap) / 2, btnH, () => {
+    beautyMix = min(1, beautyMix + 0.05);
+  }));
+}
+
+function makeBtn(id, x, y, w, h, onClick) {
+  return { id, x, y, w, h, onClick };
+}
+
+function hitBtn(px, py) {
+  for (const b of uiButtons) {
+    if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b;
+  }
+  return null;
+}
+
+
+
+
 
 function initBricks() {
   bricks = [];
@@ -153,28 +248,89 @@ function initBricks() {
   }
 }
 
+
 function gotPoses(results) {
   poses = results || [];
   if (!poses.length) return;
 
-  // pick best nose among persons
-  let best = null;
+  // pick best nose among persons, keep the corresponding pose
+  let bestPose = null;
+  let bestNose = null;
+
   for (const p of poses) {
     const kps = p.keypoints || [];
     const nose = kps.find(k => k.name === "nose");
     if (!nose) continue;
     if (nose.confidence >= NOSE_CONFIDENCE_MIN) {
-      if (!best || nose.confidence > best.confidence) best = nose;
+      if (!bestNose || nose.confidence > bestNose.confidence) {
+        bestNose = nose;
+        bestPose = p;
+      }
     }
   }
-  if (!best) return;
+  if (!bestNose || !bestPose) return;
 
-  const mappedX = map(best.x, 0, video.width, 0, width);
+  const vW = video.elt?.videoWidth || video.width;
+  const vH = video.elt?.videoHeight || video.height;
+
+  // ---- Nose X mapping (handle mirror here) ----
+  const mappedX = mirrorCamera
+    ? map(bestNose.x, 0, vW, width, 0)   // mirror on canvas
+    : map(bestNose.x, 0, vW, 0, width);
+
   noseX = constrain(mappedX, 0, width);
 
   if (noseXSmoothed == null) noseXSmoothed = noseX;
   noseXSmoothed = lerp(noseXSmoothed, noseX, NOSE_LERP);
+
+  // ---- Face ellipse (video coords) ----
+  const kps = bestPose.keypoints || [];
+  const pick = (name) => kps.find(k => k.name === name && k.confidence >= NOSE_CONFIDENCE_MIN);
+
+  const nose = pick("nose");
+  const le = pick("left_eye");
+  const re = pick("right_eye");
+  const lea = pick("left_ear");
+  const rea = pick("right_ear");
+
+  if (!nose && !(le && re)) {
+    faceVideoEllipse = null;
+    return;
+  }
+
+  // center x: prefer eyes midpoint, fallback to nose
+  const cx = (le && re) ? (le.x + re.x) / 2 : nose.x;
+
+  // a more "face-like" center y:
+  // - base: between eyes and nose
+  const eyeY = (le && re) ? (le.y + re.y) / 2 : (nose ? nose.y - 20 : 0);
+  const baseCy = nose ? (eyeY * 0.45 + nose.y * 0.55) : eyeY;
+
+  // width estimate:
+  // - ears distance is best; fallback to eye distance * factor
+  let baseW = null;
+  if (lea && rea) baseW = dist(lea.x, lea.y, rea.x, rea.y);
+  else if (le && re) baseW = dist(le.x, le.y, re.x, re.y) * 2.4;
+
+  // fallback if still null
+  if (!baseW) baseW = vW * 0.28;
+
+  // clamp + make it "a bit smaller than face"
+  baseW = constrain(baseW, vW * 0.14, vW * 0.48);
+  const faceW = baseW * 0.88;       // smaller (你要的「比臉小一點」)
+  const faceH = faceW * 1.25;       // typical face aspect
+
+  // nudge center slightly upward (cover forehead, avoid too much neck)
+  const cy = constrain(baseCy - faceH * 0.03, 0, vH);
+
+  faceVideoEllipse = {
+    cx: constrain(cx, 0, vW),
+    cy,
+    rx: faceW * 0.50,
+    ry: faceH * 0.50
+  };
 }
+
 
 function draw() {
   drawCameraBackground();
@@ -187,6 +343,7 @@ function draw() {
   drawBall();
   drawHUD();
   drawStateHints();
+  drawUIButtons();
 
   if (noseXSmoothed != null) {
     stroke(255, 40);     // 白色 + 透明度 (0~255)
@@ -196,6 +353,49 @@ function draw() {
   }
 }
 
+
+function drawUIButtons() {
+  if (!uiButtons.length) return;
+
+  push();
+  textAlign(CENTER, CENTER);
+  textSize(14 * uiScale);
+  noStroke();
+
+  for (const b of uiButtons) {
+    // 背景
+    const isBeauty = b.id === "beauty";
+    const label =
+      b.id === "beauty" ? (beautyEnabled ? "Beauty: ON" : "Beauty: OFF") :
+      b.id === "blur-" ? "Blur -" :
+      b.id === "blur+" ? "Blur +" :
+      b.id === "mix-"  ? "Mix -" :
+      b.id === "mix+"  ? "Mix +" : b.id;
+
+    // 半透明黑底，圓角，看起來像浮動按鈕
+    fill(0, 160);
+    rect(b.x, b.y, b.w, b.h, 14);
+
+    // 文字
+    fill(255);
+    text(label, b.x + b.w / 2, b.y + b.h / 2);
+  }
+
+  // 顯示數值（可選）
+  fill(0, 160);
+  const infoW = 200 * uiScale;
+  const infoH = 34 * uiScale;
+  const ix = width - UI_PAD - infoW;
+  const iy = (UI_PAD + (44 * uiScale + 10 * uiScale) * 3);
+  rect(ix, iy, infoW, infoH, 14);
+  fill(255);
+  text(`Blur: ${beautyBlur}  Mix: ${nf(beautyMix, 1, 2)}`, ix + infoW / 2, iy + infoH / 2);
+
+  pop();
+}
+
+
+
 /** Render camera to canvas as background (cover mode) */
 function drawCameraBackground() {
   background(10);
@@ -203,15 +403,16 @@ function drawCameraBackground() {
   if (!video || video.width === 0 || video.height === 0) return;
 
   const cw = width, ch = height;
-  const vw = video.width, vh = video.height;
+  const vw = video.elt?.videoWidth || video.width;
+  const vh = video.elt?.videoHeight || video.height;
 
   // 改名：不要叫 scale，避免蓋到 p5.scale()
   const coverScale = Math.max(cw / vw, ch / vh);
 
   const dw = vw * coverScale;
-  const dh = vh * coverScale;
+  const dh = vh * coverScale * camYStretch;   // 只拉 Y
   const dx = (cw - dw) / 2;
-  const dy = (ch - dh) / 2;
+  const dy = (ch - dh) / 2;                   // 重新置中，避免往下掉
 
   push();
   if (mirrorCamera) {
@@ -223,11 +424,89 @@ function drawCameraBackground() {
   }
   pop();
 
+    // ---- Beauty smoothing overlay (face only) ----
+
+
+  if (beautyEnabled && camLayer && camBlurLayer && faceVideoEllipse) {
+    // 1) Update buffers
+    camLayer.image(video, 0, 0, camLayer.width, camLayer.height);
+
+    if (frameCount % beautyEveryNFrames === 0) {
+      camBlurLayer.image(camLayer, 0, 0);
+      camBlurLayer.filter(BLUR, beautyBlur);
+    }
+
+    // 2) Convert face ellipse (video coords) -> canvas coords using cover transform
+    const sx = coverScale;
+    const sy = coverScale * camYStretch;
+
+    let cx = dx + faceVideoEllipse.cx * sx;
+    let cy = dy + faceVideoEllipse.cy * sy;
+    let rx = faceVideoEllipse.rx * sx;
+    let ry = faceVideoEllipse.ry * sy;
+
+
+
+    // Mirror correction for ellipse CENTER (important)
+    if (mirrorCamera) {
+      cx = width - cx;
+    }
+
+    const FACE_SHRINK = 0.85;   // 0.75~0.92 自己調
+    rx *= FACE_SHRINK;
+    ry *= FACE_SHRINK;
+
+    // 3) beautyLayer：先把「模糊相機」畫上去（整張畫面）
+    beautyLayer.clear();
+    beautyLayer.push();
+    if (mirrorCamera) {
+      beautyLayer.translate(width, 0);
+      beautyLayer.scale(-1, 1);
+      beautyLayer.image(camBlurLayer, dx, dy, dw, dh);
+    } else {
+      beautyLayer.image(camBlurLayer, dx, dy, dw, dh);
+    }
+    beautyLayer.pop();
+
+    // 4) 產生「漸層遮罩」：中心不透明、邊緣淡出
+    beautyMaskLayer.clear();
+    const mctx = beautyMaskLayer.drawingContext;
+
+    // feather 寬度：以較大的半徑當基準
+    const outer = Math.max(rx, ry);
+    const inner = outer * (1.0 - beautyFeather);  // inner 越小，羽化越寬
+
+    const grad = mctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    grad.addColorStop(0.0, "rgba(255,255,255,1)");
+    grad.addColorStop(1.0, "rgba(255,255,255,0)");
+
+    mctx.fillStyle = grad;
+    mctx.beginPath();
+    // 用 ellipse 畫遮罩形狀（不是圓）
+    mctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    mctx.fill();
+
+    // 5) 把遮罩套到 beautyLayer（destination-in）
+    const bctx = beautyLayer.drawingContext;
+    bctx.save();
+    bctx.globalCompositeOperation = "destination-in";
+    beautyLayer.image(beautyMaskLayer, 0, 0);
+    bctx.restore();
+
+    // 6) 疊回主畫面（用你的 beautyMix 控制強度）
+    drawingContext.save();
+    drawingContext.globalAlpha = beautyMix;
+    image(beautyLayer, 0, 0);
+    drawingContext.restore();
+  }
+
+
   if (cameraDim > 0) {
     noStroke();
     fill(0, 255 * cameraDim);
     rect(0, 0, width, height);
   }
+
 }
 
 function updatePaddleFromNose() {
@@ -368,8 +647,28 @@ function keyPressed() {
 }
 
 function mousePressed() {
+  // 先檢查是否點到 UI 按鈕
+  const b = hitBtn(mouseX, mouseY);
+  if (b) {
+    b.onClick();
+    return;
+  }
+
+  // 沒點到按鈕才 launch
   if (gameState === "ready") launchBall();
 }
+
+function touchStarted() {
+  const b = hitBtn(touches[0]?.x ?? mouseX, touches[0]?.y ?? mouseY);
+  if (b) {
+    b.onClick();
+    return false; // 阻止事件往下（避免滾動/雙擊縮放）
+  }
+
+  if (gameState === "ready") launchBall();
+  return false;
+}
+
 
 function launchBall() {
   gameState = "playing";
