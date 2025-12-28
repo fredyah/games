@@ -75,19 +75,33 @@ function preload() {
 function setup() {
   createCanvas(windowWidth, windowHeight);
   ensureBeautyLayers();
+
   video = createCapture(VIDEO, () => {});
   video.hide();
 
-  // 等相機 metadata 出來後，拿到真實尺寸再設定 element size（保持比例）
-  video.elt.onloadedmetadata = () => {
-    const vw = video.elt.videoWidth;
-    const vh = video.elt.videoHeight;
-    const targetW = 640;
-    video.size(targetW, Math.round(targetW * (vh / vw)));
+  // 保底：先給固定尺寸，避免初期 video.width/height = 0
+  video.size(640, 480);
 
-    // init beauty buffers with the SAME size as video element
-    camLayer = createGraphics(video.width, video.height);
-    camBlurLayer = createGraphics(video.width, video.height);
+  // beauty buffers 先用保底尺寸建立
+  camLayer = createGraphics(video.width, video.height);
+  camBlurLayer = createGraphics(video.width, video.height);
+
+  // 等 metadata 出來再做「精準比例」重設
+  video.elt.onloadedmetadata = () => {
+    const vw = video.elt.videoWidth || 0;
+    const vh = video.elt.videoHeight || 0;
+    if (vw === 0 || vh === 0) return; // 防呆：避免 0
+
+    const targetW = 640;
+    const targetH = Math.max(1, Math.round(targetW * (vh / vw))); // 至少 1
+    video.size(targetW, targetH);
+
+    // 防呆：確保不會 0
+    const bw = Math.max(1, video.width);
+    const bh = Math.max(1, video.height);
+
+    camLayer = createGraphics(bw, bh);
+    camBlurLayer = createGraphics(bw, bh);
   };
 
   bodyPose.detectStart(video, gotPoses);
@@ -99,7 +113,24 @@ function setup() {
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   ensureBeautyLayers();
-  applyLayout(); // 重要：resize 後重建磚塊與更新尺寸
+
+  const hasBricks = bricks && bricks.length > 0;
+
+  // 若沒有磚塊，就重建（例如剛初始化、或未建立成功）
+  if (!hasBricks) {
+    applyLayout({ rebuildBricks: true });
+    return;
+  }
+
+  // 如果你希望 gameover resize 後也還原一個乾淨畫面，可在此重建
+  //（也可以改成 false，保持 gameover 畫面一致）
+  if (gameState === "gameover") {
+    applyLayout({ rebuildBricks: true });
+    return;
+  }
+
+  // 正常情況：保留磚塊狀態
+  applyLayout({ rebuildBricks: false });
 }
 
 function ensureBeautyLayers() {
@@ -140,6 +171,51 @@ function resetBall() {
   };
 }
 
+
+
+function ensureCamBuffers() {
+  if (!video) return;
+
+  const vw = video.width;
+  const vh = video.height;
+
+  if (vw > 0 && vh > 0) {
+    if (!camLayer || camLayer.width !== vw || camLayer.height !== vh) {
+      camLayer = createGraphics(vw, vh);
+    }
+    if (!camBlurLayer || camBlurLayer.width !== vw || camBlurLayer.height !== vh) {
+      camBlurLayer = createGraphics(vw, vh);
+    }
+  }
+}
+
+
+
+function respawn() {
+  // 掉一命後的重生：不重建磚塊，只把球/板子狀態回到可發球
+  gameState = "ready";
+  resetBall();
+
+  // 只做 layout（更新 paddle 尺寸/位置、brick 尺寸等），但不要重建磚塊
+  applyLayout({ rebuildBricks: false });
+}
+
+function nextLevel() {
+  // 過關：生命回滿 + 進下一關 + 重建磚塊 + 增加難度
+  lives = 3;
+
+  rows = Math.min(rows + 1, 10);
+  ball.speed = Math.min(ball.speed + 1, 12);
+
+  gameState = "ready";
+  resetBall();
+
+  // 過關才需要重建磚塊（新關卡）
+  applyLayout({ rebuildBricks: true });
+}
+
+
+
 /**
  * 依據螢幕大小做排版：
  * - paddle 尺寸與位置
@@ -147,7 +223,9 @@ function resetBall() {
  * - cols 動態調整（讓磚塊寬度落在合理區間，並鋪滿整寬度）
  * - 重新 initBricks()
  */
-function applyLayout() {
+function applyLayout(opts = {}) {
+  const { rebuildBricks = true } = opts;
+
   // Paddle responsive
   paddle.w = constrain(width * 0.18, 120, 220);
   paddle.h = constrain(height * 0.02, 12, 18);
@@ -161,15 +239,21 @@ function applyLayout() {
 
   const usableW = width - brickSideMargin * 2;
 
-  // 根據可用寬度與希望的磚塊寬度區間，動態估算 cols
-  // 目的：讓每塊磚不要太小/太大，同時整排鋪滿 usableW
-  const idealBrickW = constrain(usableW / cols, BRICK_W_MIN, BRICK_W_MAX);
-  let newCols = floor((usableW + brickPadding) / (idealBrickW + brickPadding));
-  newCols = constrain(newCols, COLS_MIN, COLS_MAX);
-  cols = newCols;
+  // 只有在「要重建磚塊」時才允許改 cols，否則 cols 固定，避免 relayout 亂掉
+  if (rebuildBricks) {
+    const idealBrickW = constrain(usableW / cols, BRICK_W_MIN, BRICK_W_MAX);
+    let newCols = floor((usableW + brickPadding) / (idealBrickW + brickPadding));
+    newCols = constrain(newCols, COLS_MIN, COLS_MAX);
+    cols = newCols;
+  }
 
-  // 重建磚塊（會用新的 cols / padding / margin / width 重新算 brickW）
-  initBricks();
+  // 只有在需要的時候才重建磚塊
+  if (rebuildBricks) {
+    initBricks();
+  } else {
+    // 不重建磚塊：只要重新計算每塊磚的位置/尺寸即可（保留 alive 狀態與顏色）
+    relayoutExistingBricks();
+  }
 
   // 如果不是 playing，球會黏著 paddle；如果正在 playing，做安全限制避免出界
   if (gameState !== "playing") {
@@ -179,6 +263,7 @@ function applyLayout() {
     ball.x = constrain(ball.x, ball.r, width - ball.r);
     ball.y = constrain(ball.y, ball.r, height - ball.r);
   }
+
   buildUIButtons();
 }
 
@@ -247,6 +332,39 @@ function initBricks() {
     }
   }
 }
+
+
+
+
+function relayoutExistingBricks() {
+  if (!bricks || bricks.length === 0) return;
+
+  const usableW = width - brickSideMargin * 2;
+  const brickW = (usableW - (cols - 1) * brickPadding) / cols;
+  const brickH = BRICK_H;
+
+  // 你現在 bricks 是一維陣列，且建立順序是 r(0..rows-1), c(0..cols-1)
+  // 但 resize 後 cols 可能變了，原本的 bricks.length 也可能不等於 rows*cols
+  // 因此用「目前 bricks.length」去重新對應 row/col
+  for (let i = 0; i < bricks.length; i++) {
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+
+    // 若 r 超出 rows，代表原先數量不匹配（例如 cols 變化過大）
+    // 這種情況保守處理：直接停止或把超出的磚留在原地都行。
+    // 我這裡選擇：超出 rows 的就不再更新（避免亂跳）
+    if (r >= rows) break;
+
+    const x = brickSideMargin + c * (brickW + brickPadding);
+    const y = brickTopOffset + r * (brickH + brickPadding);
+
+    bricks[i].x = x;
+    bricks[i].y = y;
+    bricks[i].w = brickW;
+    bricks[i].h = brickH;
+  }
+}
+
 
 
 function gotPoses(results) {
@@ -398,36 +516,48 @@ function drawUIButtons() {
 
 /** Render camera to canvas as background (cover mode) */
 function drawCameraBackground() {
+  ensureCamBuffers();
   background(10);
 
-  if (!video || video.width === 0 || video.height === 0) return;
+  // 1) 基本存在性檢查
+  if (!video || !video.elt) return;
+
+  // 2) 等到 video 有「目前幀」可以畫（HAVE_CURRENT_DATA = 2）
+  if (video.elt.readyState < 2) return;
 
   const cw = width, ch = height;
-  const vw = video.elt?.videoWidth || video.width;
-  const vh = video.elt?.videoHeight || video.height;
 
-  // 改名：不要叫 scale，避免蓋到 p5.scale()
+  // 3) 一定要用 videoWidth/videoHeight（原生真實尺寸）
+  const vw = video.elt.videoWidth;
+  const vh = video.elt.videoHeight;
+  if (!vw || !vh) return;
+
+  // 4) cover 模式（鋪滿畫布）
   const coverScale = Math.max(cw / vw, ch / vh);
-
   const dw = vw * coverScale;
-  const dh = vh * coverScale * camYStretch;   // 只拉 Y
+  const dh = vh * coverScale * camYStretch;
   const dx = (cw - dw) / 2;
-  const dy = (ch - dh) / 2;                   // 重新置中，避免往下掉
+  const dy = (ch - dh) / 2;
 
   push();
   if (mirrorCamera) {
     translate(width, 0);
     scale(-1, 1);
-    image(video, dx, dy, dw, dh);
-  } else {
-    image(video, dx, dy, dw, dh);
   }
+  image(video, dx, dy, dw, dh);
   pop();
 
     // ---- Beauty smoothing overlay (face only) ----
 
+const camReady =
+  video &&
+  (video.elt?.videoWidth > 0) &&
+  (video.elt?.videoHeight > 0) &&
+  camLayer && camBlurLayer &&
+  camLayer.width > 0 && camLayer.height > 0 &&
+  camBlurLayer.width > 0 && camBlurLayer.height > 0;
 
-  if (beautyEnabled && camLayer && camBlurLayer && faceVideoEllipse) {
+if (beautyEnabled && camReady && faceVideoEllipse) {
     // 1) Update buffers
     camLayer.image(video, 0, 0, camLayer.width, camLayer.height);
 
@@ -536,13 +666,12 @@ function updateGame() {
   // Bottom = lose life
   if (ball.y - ball.r > height) {
     lives -= 1;
+
     if (lives <= 0) {
       gameState = "gameover";
     } else {
-      gameState = "ready";
-      resetBall();
-      // 重新套用 layout，避免 resize 後 paddle/ball 不一致
-      applyLayout();
+      // 掉一命：不重置磚塊
+      respawn();
     }
     return;
   }
@@ -571,11 +700,7 @@ function updateGame() {
 
       // Win condition: next level
       if (bricks.every(x => !x.alive)) {
-        rows = Math.min(rows + 1, 10);
-        ball.speed = Math.min(ball.speed + 1, 12);
-        gameState = "ready";
-        resetBall();
-        applyLayout(); // 重要：下一關也要重排一次，確保寬度仍鋪滿
+        nextLevel();
       }
       break;
     }
@@ -641,7 +766,7 @@ function keyPressed() {
   if (key === ' ' && gameState === "ready") launchBall();
   if (key === 'r' || key === 'R') {
     resetGame();
-    applyLayout(); // 重新開始後也套用一次排版
+    applyLayout({ rebuildBricks: true }); // 重新開始後也套用一次排版
   }
   if (key === 'c' || key === 'C') cameraDim = (cameraDim > 0) ? 0 : 0.25;
 }
