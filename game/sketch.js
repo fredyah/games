@@ -82,7 +82,7 @@ let beautyFeather = 0.32;   // 0~0.6，越大邊緣越柔、擴散越寬
 
 let glassesPose = null;     // { cx, cy, w, h, rot }
 let faceMatrixData = null;     // 4x4 facial transformation matrix (flatten)
-let sunglassesMode = true;    // 預設開啟太陽眼鏡材質
+let sunglassesMode = false;    // 預設開啟太陽眼鏡材質
 let glassesEnabled = false;   // 預設不顯示 3D model
 
 
@@ -180,7 +180,7 @@ function setGlassesMode(mode) {
 
   // 若 root 已存在，也可立即隱藏/顯示（renderThreeGlasses() 仍會再管一次）
   if (threeGlassesRoot) {
-    threeGlassesRoot.visible = glassesEnabled && !!glassesPose;
+    threeGlassesRoot.visible = glassesEnabled; // 只管開關
   }
 }
 
