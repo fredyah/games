@@ -39,6 +39,12 @@ let threeGlasses = null;
 let threeGlassesRoot = null;
 let threeReady = false;
 let threeGlassesAlign = null;
+const GLASSES_MODE_OFF = 0;
+const GLASSES_MODE_SUN = 1;
+const GLASSES_MODE_NORMAL = 2;
+// 預設：不顯示（但第一下會切到 SUN）
+let glassesMode = GLASSES_MODE_OFF;
+
 
 
 // 調整用參數
@@ -76,8 +82,9 @@ let beautyFeather = 0.32;   // 0~0.6，越大邊緣越柔、擴散越寬
 
 let glassesPose = null;     // { cx, cy, w, h, rot }
 let faceMatrixData = null;     // 4x4 facial transformation matrix (flatten)
-let sunglassesMode = false;    // 太陽眼鏡模式（鏡片變黑/變透明度）
-let glassesEnabled = true;
+let sunglassesMode = true;    // 預設開啟太陽眼鏡材質
+let glassesEnabled = false;   // 預設不顯示 3D model
+
 
 // Game
 let paddle, ball;
@@ -160,6 +167,32 @@ function buildOvalIndexSet(connections) {
 /* =========================
  * Three.js: 必要完整清理（重點）
  * ========================= */
+
+function setGlassesMode(mode) {
+  glassesMode = mode;
+
+  // 由 mode 推導兩個旗標，避免狀態不同步
+  glassesEnabled = (mode !== GLASSES_MODE_OFF);
+  sunglassesMode = (mode === GLASSES_MODE_SUN);
+
+  // 模型若已載入，立刻套材質
+  applySunglassesMaterial(sunglassesMode);
+
+  // 若 root 已存在，也可立即隱藏/顯示（renderThreeGlasses() 仍會再管一次）
+  if (threeGlassesRoot) {
+    threeGlassesRoot.visible = glassesEnabled && !!glassesPose;
+  }
+}
+
+function cycleGlassesMode() {
+  // 你要的「預設太陽眼鏡，但關掉模型消失」：
+  // OFF -> SUN -> NORMAL -> OFF
+  if (glassesMode === GLASSES_MODE_OFF) setGlassesMode(GLASSES_MODE_SUN);
+  else if (glassesMode === GLASSES_MODE_SUN) setGlassesMode(GLASSES_MODE_NORMAL);
+  else setGlassesMode(GLASSES_MODE_OFF);
+}
+
+
 
 function disposeThree() {
   // 1) 移除 DOM overlay（保險）
@@ -454,7 +487,7 @@ function initThree() {
 
       threeGlassesAlign.add(threeGlasses);
 
-      applySunglassesMaterial(sunglassesMode);
+      setGlassesMode(glassesMode);
 
       // // 3) 存尺寸（可選）
       // const size = box.getSize(new THREE.Vector3());
@@ -784,14 +817,8 @@ function buildUIButtons() {
   }));
 
   y += btnH + gap;
-  uiButtons.push(makeBtn("glasses", xRight, y, btnW, btnH, () => {
-    glassesEnabled = !glassesEnabled;
-  }));
-  y += btnH + gap;
-
-  uiButtons.push(makeBtn("sun", xRight, y, btnW, btnH, () => {
-    sunglassesMode = !sunglassesMode;
-    applySunglassesMaterial(sunglassesMode);
+  uiButtons.push(makeBtn("glassesMode", xRight, y, btnW, btnH, () => {
+    cycleGlassesMode();
   }));
 
 }
@@ -822,8 +849,11 @@ function drawUIButtons() {
       b.id === "blur+" ? "Blur +" :
       b.id === "mix-" ? "Mix -" :
       b.id === "mix+" ? "Mix +" :
-      b.id === "glasses" ? (glassesEnabled ? "Glasses: ON" : "Glasses: OFF") :
-      b.id === "sun" ? (sunglassesMode ? "Sunglasses: ON" : "Sunglasses: OFF") :
+      b.id === "glassesMode"
+        ? (glassesMode === GLASSES_MODE_OFF
+            ? "Glasses: OFF"
+            : (glassesMode === GLASSES_MODE_SUN ? "Sunglasses: ON" : "Glasses: ON"))
+        :
       b.id;
 
     fill(0, 160);
@@ -1219,10 +1249,8 @@ function keyPressed() {
   }
   if (key === 'c' || key === 'C') cameraDim = (cameraDim > 0) ? 0 : 0.25;
 
-  if (key === 'g' || key === 'G') glassesEnabled = !glassesEnabled;
-  if (key === 's' || key === 'S') {
-    sunglassesMode = !sunglassesMode;
-    applySunglassesMaterial(sunglassesMode);
+  if (key === 'g' || key === 'G' || key === 's' || key === 'S') {
+    cycleGlassesMode();
   }
 
 }
