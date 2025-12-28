@@ -41,7 +41,7 @@ let threeReady = false;
 
 // 調整用參數
 let glassesZ = 10;          // 模型離相機的深度
-let glassesScaleK = 0.012;  // 尺寸縮放係數：用 eyeDist 推尺寸（需微調）
+let glassesScaleK = 0.5;  // 尺寸縮放係數：用 eyeDist 推尺寸（需微調）
 
 // Camera rendering options
 let cameraDim = 0.25;     // 0~1, dark overlay to make game visible (press C to toggle)
@@ -51,7 +51,7 @@ let camYStretch = 1.15;
 // Nose tracking
 let noseX = null;           // mapped to canvas X
 let noseXSmoothed = null;
-const NOSE_CONFIDENCE_MIN = 0.25;
+// const NOSE_CONFIDENCE_MIN = 0.25;
 const NOSE_LERP = 0.18;     // smoothing factor
 
 let uiButtons = [];
