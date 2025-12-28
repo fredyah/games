@@ -299,9 +299,17 @@ function setup() {
 }
 
 function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
+  // 1) 保底：避免 0 尺寸（手機旋轉 / address bar 抖動時常見）
+  const w = Math.max(1, Math.floor(windowWidth));
+  const h = Math.max(1, Math.floor(windowHeight));
+
+  // 2) 用保底尺寸 resize
+  resizeCanvas(w, h);
+
+  // 3) 確保 beauty layers 也不會是 0x0
   ensureBeautyLayers();
 
+  // 4) Layout（你的原邏輯保留）
   const hasBricks = bricks && bricks.length > 0;
 
   if (!hasBricks) {
@@ -312,25 +320,34 @@ function windowResized() {
     applyLayout({ rebuildBricks: false });
   }
 
-  // Three renderer size：用 p5 的 width/height 同步（必要修正）
+  // 5) Three renderer 同步：用「同一組保底尺寸」而不是依賴 width/height 當下狀態
   if (threeRenderer) {
     threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-    threeRenderer.setSize(width, height);
-    threeRenderer.domElement.style.width = `${width}px`;
-    threeRenderer.domElement.style.height = `${height}px`;
+    threeRenderer.setSize(w, h, false); // false: 不改 internal style，下面自己設
+    threeRenderer.domElement.style.width = `${w}px`;
+    threeRenderer.domElement.style.height = `${h}px`;
   }
 
+  // 6) Three camera aspect 保底（避免 h=0）
   if (threeCam && threeCam.isPerspectiveCamera) {
-    threeCam.aspect = width / height;
+    threeCam.aspect = w / h;
     threeCam.updateProjectionMatrix();
   }
 
-  redraw();
+  // 7) 如果你是預設 loop()，其實不需要；保留也不會錯
+  // redraw();
 }
 
 function ensureBeautyLayers() {
-  beautyLayer = createGraphics(width, height);
-  beautyMaskLayer = createGraphics(width, height);
+  const w = Math.max(1, width);
+  const h = Math.max(1, height);
+
+  if (!beautyLayer || beautyLayer.width !== w || beautyLayer.height !== h) {
+    beautyLayer = createGraphics(w, h);
+  }
+  if (!beautyMaskLayer || beautyMaskLayer.width !== w || beautyMaskLayer.height !== h) {
+    beautyMaskLayer = createGraphics(w, h);
+  }
 
   beautyLayer.clear();
   beautyMaskLayer.clear();
@@ -880,18 +897,16 @@ function drawUIButtons() {
  * ========================= */
 
 function ensureCamBuffers() {
-  if (!video) return;
+  if (!video || !video.elt) return;
 
-  const vw = video.width;
-  const vh = video.height;
+  const vw = Math.max(1, video.elt.videoWidth || video.width || 1);
+  const vh = Math.max(1, video.elt.videoHeight || video.height || 1);
 
-  if (vw > 0 && vh > 0) {
-    if (!camLayer || camLayer.width !== vw || camLayer.height !== vh) {
-      camLayer = createGraphics(vw, vh);
-    }
-    if (!camBlurLayer || camBlurLayer.width !== vw || camBlurLayer.height !== vh) {
-      camBlurLayer = createGraphics(vw, vh);
-    }
+  if (!camLayer || camLayer.width !== vw || camLayer.height !== vh) {
+    camLayer = createGraphics(vw, vh);
+  }
+  if (!camBlurLayer || camBlurLayer.width !== vw || camBlurLayer.height !== vh) {
+    camBlurLayer = createGraphics(vw, vh);
   }
 }
 
@@ -902,7 +917,8 @@ function drawCameraBackground() {
   if (!video || !video.elt) return;
   if (video.elt.readyState < 2) return;
 
-  const cw = width, ch = height;
+  const cw = Math.max(1, width);
+  const ch = Math.max(1, height);
 
   const vw = video.elt.videoWidth;
   const vh = video.elt.videoHeight;
@@ -923,15 +939,19 @@ function drawCameraBackground() {
   pop();
 
   // ---- Beauty smoothing overlay (face only) ----
+  const okG = (g) => !!g && g.width > 0 && g.height > 0;
+
+  // 任何一個 buffer 若是 0x0，就不要進入 overlay（避免 drawImage InvalidStateError）
   const camReady =
-    video &&
-    (video.elt?.videoWidth > 0) &&
-    (video.elt?.videoHeight > 0) &&
-    camLayer && camBlurLayer &&
-    camLayer.width > 0 && camLayer.height > 0 &&
-    camBlurLayer.width > 0 && camBlurLayer.height > 0;
+    (video.elt.videoWidth > 0) &&
+    (video.elt.videoHeight > 0) &&
+    okG(camLayer) &&
+    okG(camBlurLayer) &&
+    okG(beautyLayer) &&
+    okG(beautyMaskLayer);
 
   if (beautyEnabled && camReady && faceVideoEllipse) {
+    // 來源 video OK，buffer OK 才做
     camLayer.image(video, 0, 0, camLayer.width, camLayer.height);
 
     if (frameCount % beautyEveryNFrames === 0) {
