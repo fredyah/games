@@ -328,14 +328,18 @@ function applyFaceRotationToObject(obj, matData) {
   const scl = new THREE.Vector3();
   m.decompose(pos, quat, scl);
 
-  // 自拍鏡像時通常要反 yaw/roll（依你 mirrorCamera）
+  // 先轉 Euler 做軸向修正（pitch/yaw/roll）
+  const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
+
+  // ✅ 必要：修正抬頭/低頭方向相反（pitch）
+  e.x = -e.x;
+
+  // 鏡像自拍：通常只反 yaw/roll（不反 pitch）
   if (mirrorCamera) {
-    const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
     e.y = -e.y; // yaw
     e.z = -e.z; // roll
-    quat.setFromEuler(e);
   }
-
+  quat.setFromEuler(e);
   obj.quaternion.copy(quat);
   return true;
 }
