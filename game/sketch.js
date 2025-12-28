@@ -73,6 +73,8 @@ let beautyMaskLayer = null; // 橢圓漸層遮罩
 let beautyFeather = 0.32;   // 0~0.6，越大邊緣越柔、擴散越寬
 
 let glassesPose = null;     // { cx, cy, w, h, rot }
+let faceMatrixData = null;     // 4x4 facial transformation matrix (flatten)
+let sunglassesMode = false;    // 太陽眼鏡模式（鏡片變黑/變透明度）
 let glassesEnabled = true;
 
 // Game
@@ -276,11 +278,8 @@ function windowResized() {
     threeRenderer.setSize(width, height);
   }
 
-  if (threeCam) {
-    threeCam.left = 0;
-    threeCam.right = width;
-    threeCam.top = height;
-    threeCam.bottom = 0;
+  if (threeCam && threeCam.isPerspectiveCamera) {
+    threeCam.aspect = width / height;
     threeCam.updateProjectionMatrix();
   }
 
@@ -298,6 +297,41 @@ function ensureBeautyLayers() {
 /* =========================
  * Three.js init
  * ========================= */
+
+
+function applyFaceRotationToObject(obj, matData) {
+  const THREE = window.THREE;
+  if (!THREE || !obj || !matData || matData.length !== 16) return false;
+
+  // MediaPipe 的 matrix flatten 後丟進 Matrix4
+  let m = new THREE.Matrix4().fromArray(matData);
+
+  // 常見必要：row-major / column-major 修正
+  // 如果你發現旋轉整個怪掉，試試把 transpose() 拿掉
+  m.transpose();
+
+  // 常見必要：座標系修正（螢幕 y 向下、以及 z 方向差異）
+  const conv = new THREE.Matrix4().makeScale(1, -1, -1);
+  m.premultiply(conv);
+
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+  m.decompose(pos, quat, scl);
+
+  // 自拍鏡像時通常要反 yaw/roll（依你 mirrorCamera）
+  if (mirrorCamera) {
+    const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
+    e.y = -e.y; // yaw
+    e.z = -e.z; // roll
+    quat.setFromEuler(e);
+  }
+
+  obj.quaternion.copy(quat);
+  return true;
+}
+
+
 
 function initThree() {
   // 必要：每次 init 前先完整釋放舊資源（避免 GPU/記憶體累積）
@@ -326,8 +360,10 @@ function initThree() {
   threeScene = new THREE.Scene();
 
   // x: 0..width, y: 0..height（top=height, bottom=0）
-  threeCam = new THREE.OrthographicCamera(0, width, height, 0, -1000, 1000);
-  threeCam.position.z = 100;
+  const fov = 45; // 可調：35~55 都常見
+  threeCam = new THREE.PerspectiveCamera(fov, width / height, 0.1, 5000);
+  threeCam.position.set(0, 0, 900);   // 相機離你「臉平面」的距離
+  threeCam.lookAt(0, 0, 0);
 
   const amb = new THREE.AmbientLight(0xffffff, 1.0);
   threeScene.add(amb);
@@ -375,6 +411,12 @@ function updateFaceFromMediaPipe() {
 
   const tsMs = performance.now();
   const result = faceLandmarker.detectForVideo(video.elt, tsMs);
+
+  const ftm = result?.facialTransformationMatrixes?.[0];
+  faceMatrixData = (ftm && ftm.rows === 4 && ftm.columns === 4 && Array.isArray(ftm.data))
+    ? ftm.data.slice()
+    : null;
+
   lastVideoTime = t;
 
   const faces = result?.faceLandmarks;
@@ -524,23 +566,77 @@ function computeCoverTransform(vw, vh) {
  * Three render
  * ========================= */
 
+
+function screenToWorld(xPx, yPx, zWorld = 0) {
+  // 把螢幕像素映射到 z = zWorld 的平面上（配合 PerspectiveCamera）
+  const d = threeCam.position.z - zWorld; // 相機到該平面的距離
+  const vH = 2 * Math.tan(THREE.MathUtils.degToRad(threeCam.fov / 2)) * d;
+  const vW = vH * threeCam.aspect;
+
+  const nx = (xPx / width) - 0.5;   // -0.5..0.5
+  const ny = (yPx / height) - 0.5;
+
+  const wx = nx * vW;
+  const wy = -ny * vH;              // 螢幕 y 向下，three 世界 y 向上
+  return { x: wx, y: wy, z: zWorld };
+}
+
+
+
+function applyFaceRotationToObject(obj, matData) {
+  if (!matData || matData.length !== 16) return false;
+
+  // MediaPipe 的 matrix 是 flattened 16 values；Three.js Matrix4 讀入 array
+  // 注意：如果你發現旋轉整個怪掉（例如 pitch/yaw 軸交換），試著把 transpose() 打開/關掉。
+  const m = new THREE.Matrix4().fromArray(matData);
+
+  // ★ 很多情況下 mediapipe 的 data 會是 row-major；three.js 內部偏 column-major。
+  // 如果旋轉不對，就改成：m.transpose();
+  m.transpose();
+
+  // 座標系修正：three 世界 y 向上；你畫面是 y 向下，且 mediapipe 的 z 方向可能相反
+  const conv = new THREE.Matrix4().makeScale(1, -1, -1);
+  m.premultiply(conv);
+
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+  m.decompose(pos, quat, scl);
+
+  // 鏡像自拍時，yaw/roll 通常要反向（依你的 mirrorCamera）
+  if (mirrorCamera) {
+    const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
+    e.y = -e.y; // yaw
+    e.z = -e.z; // roll
+    quat.setFromEuler(e);
+  }
+
+  obj.quaternion.copy(quat);
+  return true;
+}
+
+
 function renderThreeGlasses() {
   if (!threeRenderer || !threeScene || !threeCam) return;
 
-  threeCam.left = 0;
-  threeCam.right = width;
-  threeCam.top = height;
-  threeCam.bottom = 0;
-  threeCam.updateProjectionMatrix();
-
   if (threeReady && glassesEnabled && glassesPose && threeGlassesRoot) {
-    threeGlassesRoot.position.set(glassesPose.cx, glassesPose.cy, glassesZ);
+    // 1) 位置：把螢幕像素(cx,cy)投到 3D 世界的 z=0 平面
+    const P = screenToWorld(glassesPose.cx, glassesPose.cy, 0);
+    threeGlassesRoot.position.set(P.x, P.y, P.z);
 
-    const rot = mirrorCamera ? -glassesPose.rot : glassesPose.rot;
-    threeGlassesRoot.rotation.set(0, 0, rot);
+    // 2) 旋轉：用 MediaPipe facialTransformationMatrix 取得真 3D 旋轉
+    const ok = applyFaceRotationToObject(threeGlassesRoot, faceMatrixData);
 
+    // 3) 尺寸：先沿用 eyeDist 推尺度（可控、好調）
     const s = glassesPose.w * glassesScaleK;
     threeGlassesRoot.scale.set(s, s, s);
+
+    // 4) 拿不到 matrix 時，fallback 用你原本的 2D roll
+    if (!ok) {
+      const rot = mirrorCamera ? -glassesPose.rot : glassesPose.rot;
+      threeGlassesRoot.rotation.set(0, 0, rot);
+    }
+
     threeGlassesRoot.visible = true;
   } else if (threeGlassesRoot) {
     threeGlassesRoot.visible = false;
@@ -609,6 +705,18 @@ function buildUIButtons() {
   uiButtons.push(makeBtn("mix+", xRight + (btnW + gap) / 2, y, (btnW - gap) / 2, btnH, () => {
     beautyMix = min(1, beautyMix + 0.05);
   }));
+
+  y += btnH + gap;
+  uiButtons.push(makeBtn("glasses", xRight, y, btnW, btnH, () => {
+    glassesEnabled = !glassesEnabled;
+  }));
+  y += btnH + gap;
+
+  uiButtons.push(makeBtn("sun", xRight, y, btnW, btnH, () => {
+    sunglassesMode = !sunglassesMode;
+    applySunglassesMaterial(sunglassesMode);
+  }));
+
 }
 
 function makeBtn(id, x, y, w, h, onClick) {
@@ -637,6 +745,8 @@ function drawUIButtons() {
       b.id === "blur+" ? "Blur +" :
       b.id === "mix-" ? "Mix -" :
       b.id === "mix+" ? "Mix +" : b.id;
+      b.id === "glasses" ? (glassesEnabled ? "Glasses: ON" : "Glasses: OFF") :
+      b.id === "sun" ? (sunglassesMode ? "Sunglasses: ON" : "Sunglasses: OFF") :
 
     fill(0, 160);
     rect(b.x, b.y, b.w, b.h, 14);
@@ -1030,6 +1140,13 @@ function keyPressed() {
     applyLayout({ rebuildBricks: true });
   }
   if (key === 'c' || key === 'C') cameraDim = (cameraDim > 0) ? 0 : 0.25;
+
+  if (key === 'g' || key === 'G') glassesEnabled = !glassesEnabled;
+  if (key === 's' || key === 'S') {
+    sunglassesMode = !sunglassesMode;
+    applySunglassesMaterial(sunglassesMode);
+  }
+
 }
 
 function mousePressed() {
