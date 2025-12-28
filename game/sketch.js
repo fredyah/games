@@ -193,6 +193,11 @@ function disposeThree() {
   // 3) 釋放 renderer（重點）
   if (threeRenderer) {
     try {
+      // ★ 必要：一定移除 renderer 自己的 canvas（不靠 querySelector）
+      if (threeRenderer.domElement && threeRenderer.domElement.parentNode) {
+        threeRenderer.domElement.parentNode.removeChild(threeRenderer.domElement);
+      }
+
       threeRenderer.dispose?.();
       // 某些情況下需要 forceContextLoss 才能真的釋放 GPU
       threeRenderer.forceContextLoss?.();
@@ -276,6 +281,8 @@ function windowResized() {
   if (threeRenderer) {
     threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     threeRenderer.setSize(width, height);
+    threeRenderer.domElement.style.width = `${width}px`;
+    threeRenderer.domElement.style.height = `${height}px`;
   }
 
   if (threeCam && threeCam.isPerspectiveCamera) {
@@ -330,6 +337,53 @@ function applyFaceRotationToObject(obj, matData) {
   obj.quaternion.copy(quat);
   return true;
 }
+
+
+
+function applySunglassesMaterial(on) {
+  if (!threeGlasses) return;
+
+  threeGlasses.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+
+    for (const m of mats) {
+      // 第一次進來先備份原始材質參數
+      if (!m.userData._orig) {
+        m.userData._orig = {
+          opacity: m.opacity,
+          transparent: m.transparent,
+          metalness: ("metalness" in m) ? m.metalness : undefined,
+          roughness: ("roughness" in m) ? m.roughness : undefined,
+          color: m.color ? m.color.clone() : null,
+        };
+      }
+
+      const orig = m.userData._orig;
+
+      if (on) {
+        // 太陽眼鏡：偏黑、稍微透明、反光感一點
+        if (m.color) m.color.setRGB(0.05, 0.05, 0.05);
+        m.transparent = true;
+        m.opacity = 0.65;
+        if ("metalness" in m) m.metalness = 0.6;
+        if ("roughness" in m) m.roughness = 0.2;
+      } else {
+        // 還原
+        if (orig.color && m.color) m.color.copy(orig.color);
+        m.transparent = orig.transparent;
+        m.opacity = orig.opacity;
+        if ("metalness" in m && orig.metalness !== undefined) m.metalness = orig.metalness;
+        if ("roughness" in m && orig.roughness !== undefined) m.roughness = orig.roughness;
+      }
+
+      m.needsUpdate = true;
+    }
+  });
+}
+
+
 
 
 
@@ -390,6 +444,7 @@ function initThree() {
 
       // 4) 掛到 root
       threeGlassesRoot.add(threeGlasses);
+      applySunglassesMaterial(sunglassesMode);
 
       threeReady = true;
     },
@@ -568,6 +623,8 @@ function computeCoverTransform(vw, vh) {
 
 
 function screenToWorld(xPx, yPx, zWorld = 0) {
+  const THREE = window.THREE;
+  if (!THREE || !threeCam) return { x: 0, y: 0, z: zWorld };
   // 把螢幕像素映射到 z = zWorld 的平面上（配合 PerspectiveCamera）
   const d = threeCam.position.z - zWorld; // 相機到該平面的距離
   const vH = 2 * Math.tan(THREE.MathUtils.degToRad(threeCam.fov / 2)) * d;
@@ -621,7 +678,7 @@ function renderThreeGlasses() {
 
   if (threeReady && glassesEnabled && glassesPose && threeGlassesRoot) {
     // 1) 位置：把螢幕像素(cx,cy)投到 3D 世界的 z=0 平面
-    const P = screenToWorld(glassesPose.cx, glassesPose.cy, 0);
+    const P = screenToWorld(glassesPose.cx, glassesPose.cy, glassesZ);
     threeGlassesRoot.position.set(P.x, P.y, P.z);
 
     // 2) 旋轉：用 MediaPipe facialTransformationMatrix 取得真 3D 旋轉
@@ -744,9 +801,10 @@ function drawUIButtons() {
       b.id === "blur-" ? "Blur -" :
       b.id === "blur+" ? "Blur +" :
       b.id === "mix-" ? "Mix -" :
-      b.id === "mix+" ? "Mix +" : b.id;
+      b.id === "mix+" ? "Mix +" :
       b.id === "glasses" ? (glassesEnabled ? "Glasses: ON" : "Glasses: OFF") :
       b.id === "sun" ? (sunglassesMode ? "Sunglasses: ON" : "Sunglasses: OFF") :
+      b.id;
 
     fill(0, 160);
     rect(b.x, b.y, b.w, b.h, 14);
