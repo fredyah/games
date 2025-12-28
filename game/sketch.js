@@ -583,37 +583,37 @@ function screenToWorld(xPx, yPx, zWorld = 0) {
 
 
 
-function applyFaceRotationToObject(obj, matData) {
-  if (!matData || matData.length !== 16) return false;
+// function applyFaceRotationToObject(obj, matData) {
+//   if (!matData || matData.length !== 16) return false;
 
-  // MediaPipe 的 matrix 是 flattened 16 values；Three.js Matrix4 讀入 array
-  // 注意：如果你發現旋轉整個怪掉（例如 pitch/yaw 軸交換），試著把 transpose() 打開/關掉。
-  const m = new THREE.Matrix4().fromArray(matData);
+//   // MediaPipe 的 matrix 是 flattened 16 values；Three.js Matrix4 讀入 array
+//   // 注意：如果你發現旋轉整個怪掉（例如 pitch/yaw 軸交換），試著把 transpose() 打開/關掉。
+//   const m = new THREE.Matrix4().fromArray(matData);
 
-  // ★ 很多情況下 mediapipe 的 data 會是 row-major；three.js 內部偏 column-major。
-  // 如果旋轉不對，就改成：m.transpose();
-  m.transpose();
+//   // ★ 很多情況下 mediapipe 的 data 會是 row-major；three.js 內部偏 column-major。
+//   // 如果旋轉不對，就改成：m.transpose();
+//   m.transpose();
 
-  // 座標系修正：three 世界 y 向上；你畫面是 y 向下，且 mediapipe 的 z 方向可能相反
-  const conv = new THREE.Matrix4().makeScale(1, -1, -1);
-  m.premultiply(conv);
+//   // 座標系修正：three 世界 y 向上；你畫面是 y 向下，且 mediapipe 的 z 方向可能相反
+//   const conv = new THREE.Matrix4().makeScale(1, -1, -1);
+//   m.premultiply(conv);
 
-  const pos = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const scl = new THREE.Vector3();
-  m.decompose(pos, quat, scl);
+//   const pos = new THREE.Vector3();
+//   const quat = new THREE.Quaternion();
+//   const scl = new THREE.Vector3();
+//   m.decompose(pos, quat, scl);
 
-  // 鏡像自拍時，yaw/roll 通常要反向（依你的 mirrorCamera）
-  if (mirrorCamera) {
-    const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
-    e.y = -e.y; // yaw
-    e.z = -e.z; // roll
-    quat.setFromEuler(e);
-  }
+//   // 鏡像自拍時，yaw/roll 通常要反向（依你的 mirrorCamera）
+//   if (mirrorCamera) {
+//     const e = new THREE.Euler().setFromQuaternion(quat, "XYZ");
+//     e.y = -e.y; // yaw
+//     e.z = -e.z; // roll
+//     quat.setFromEuler(e);
+//   }
 
-  obj.quaternion.copy(quat);
-  return true;
-}
+//   obj.quaternion.copy(quat);
+//   return true;
+// }
 
 
 function renderThreeGlasses() {
