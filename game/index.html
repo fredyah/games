@@ -23,6 +23,14 @@
     });
   </script>
 
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+    import { GLTFLoader } from "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+
+    window.THREE = THREE;
+    window.GLTFLoader = GLTFLoader;
+  </script>
+
 
   <style>
     body { margin: 0; background: #111; color: #eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans TC", sans-serif; }
