@@ -55,7 +55,7 @@ let faceVideoEllipse = null; // 臉部框（在 video 座標系）
 
 let beautyLayer = null;      // 存「模糊後」要疊上去的那層（已被遮罩）
 let beautyMaskLayer = null;  // 存橢圓漸層遮罩
-let beautyFeather = 0.28;    // 0~0.6，越大邊緣越柔、擴散越寬
+let beautyFeather = 0.32;    // 0~0.6，越大邊緣越柔、擴散越寬
 
 
 
@@ -782,6 +782,12 @@ if (beautyEnabled && camReady && faceVideoEllipse) {
 
     // 顯瘦：只在 X 軸再縮一點（比「整體縮小」更像瘦臉）
     rx *= beautySlimX;
+
+
+  const BEAUTY_EXPAND = 1.15;
+  rx *= BEAUTY_EXPAND;
+  ry *= BEAUTY_EXPAND;
+
 
     // 3) beautyLayer：先把「模糊相機」畫上去（整張畫面）
     beautyLayer.clear();
