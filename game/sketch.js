@@ -41,7 +41,7 @@ let threeReady = false;
 
 // 調整用參數
 let glassesZ = 10;          // 模型離相機的深度
-let glassesScaleK = 0.5;  // 尺寸縮放係數：用 eyeDist 推尺寸（需微調）
+let glassesScaleK = 0.4;  // 尺寸縮放係數：用 eyeDist 推尺寸（需微調）
 
 // Camera rendering options
 let cameraDim = 0.25;     // 0~1, dark overlay to make game visible (press C to toggle)
@@ -441,6 +441,8 @@ function initThree() {
       // 3) 存尺寸（可選）
       const size = box.getSize(new THREE.Vector3());
       threeGlasses.userData.baseSize = size;
+
+      threeGlasses.rotation.x = Math.PI;
 
       // 4) 掛到 root
       threeGlassesRoot.add(threeGlasses);
