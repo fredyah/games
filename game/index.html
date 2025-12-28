@@ -6,10 +6,23 @@
   <title>Breakout + Nose Control (p5.js + ml5 BodyPose)</title>
 
   <!-- p5.js -->
-  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
 
   <!-- ml5.js (固定主版號，避免 @latest 變更造成壞掉) -->
-  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+    <!--  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>  -->
+
+  <script type="module">
+    import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+    window.FaceLandmarker = FaceLandmarker;
+    window.FilesetResolver = FilesetResolver;
+
+    console.log("[MediaPipe] loaded:", {
+      FaceLandmarker: typeof window.FaceLandmarker,
+      FilesetResolver: typeof window.FilesetResolver
+    });
+  </script>
+
 
   <style>
     body { margin: 0; background: #111; color: #eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans TC", sans-serif; }

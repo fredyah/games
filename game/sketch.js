@@ -6,6 +6,7 @@
  * - Press [R] restart, [C] toggle camera overlay darkness
  */
 
+console.log("sketch.js loaded", new Date().toISOString());
 // Brick colors (palette)
 const BRICK_PALETTE = [
   "#ff595e", "#ffca3a", "#8ac926", "#1982c4", "#6a4c93",
@@ -13,8 +14,19 @@ const BRICK_PALETTE = [
 ];
 
 let video;
-let bodyPose;
-let poses = [];
+
+// MediaPipe Face Landmarker
+let faceLandmarker = null;
+let mpReady = false;
+let lastVideoTime = -1;
+
+// 用來估算臉部外框（橢圓）的索引集合（從 FACE_OVAL connections 轉出來）
+let faceOvalIndices = null;
+
+// Slim control（可選：讓遮罩更「窄」一點，視覺顯瘦但不會太假）
+let beautySlimX = 0.88; // 0.82~0.95 建議範圍
+
+
 
 // Camera rendering options
 let cameraDim = 0.25;        // 0~1, dark overlay to make game visible (press C to toggle)
@@ -67,10 +79,68 @@ const BRICK_W_MAX = 120;    // 每塊磚最大寬度（避免太大）
 const COLS_MIN = 6;
 const COLS_MAX = 14;
 
-function preload() {
-  // MoveNet + flipped:true makes L/R align with mirrored feel (like a selfie camera)
-  bodyPose = ml5.bodyPose("MoveNet", { flipped: false });
+
+async function initFaceLandmarker() {
+  // 從 window 取（由 index.html 的 module import 掛上來）
+  const FilesetResolver_ = window.FilesetResolver;
+  const FaceLandmarker_  = window.FaceLandmarker;
+
+  if (!FilesetResolver_ || !FaceLandmarker_) {
+    throw new Error("MediaPipe Tasks Vision not loaded. Check index.html module import order.");
+  }
+
+  // 建議：這個版本要跟你 import 的一致（你用 latest 就維持 latest)
+  const MP_VER = "0.10.14";
+  const vision = await FilesetResolver_.forVisionTasks(
+    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}/wasm`
+  );
+
+
+  const modelUrl =
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
+  const common = {
+    runningMode: "VIDEO",
+    numFaces: 1,
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: false,
+  };
+
+  // 先嘗試 GPU，不行就 fallback CPU（你原本寫得很好，保留）
+  try {
+    faceLandmarker = await FaceLandmarker_.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: modelUrl, delegate: "GPU" },
+      ...common,
+    });
+  } catch (e) {
+    console.warn("GPU delegate failed, fallback to CPU:", e);
+    faceLandmarker = await FaceLandmarker_.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: modelUrl, delegate: "CPU" },
+      ...common,
+    });
+  }
+
+  // 取得臉外框索引（不同版本可能不存在，保底）
+  const OVAL = FaceLandmarker_.FACE_LANDMARKS_FACE_OVAL;
+  faceOvalIndices = OVAL ? buildOvalIndexSet(OVAL) : null;
+
+  mpReady = true;
 }
+
+
+function buildOvalIndexSet(connections) {
+  if (!connections) return null;            // 防呆：沒有就回 null
+  const s = new Set();
+  for (const c of connections) {
+    // 有些版本 connection 可能是 [start, end] 而不是 {start, end}
+    const start = (c.start ?? c[0]);
+    const end   = (c.end   ?? c[1]);
+    if (start != null) s.add(start);
+    if (end != null) s.add(end);
+  }
+  return Array.from(s);
+}
+
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -78,6 +148,11 @@ function setup() {
 
   video = createCapture(VIDEO, () => {});
   video.hide();
+
+  initFaceLandmarker().catch(err => {
+    console.error("FaceLandmarker init failed:", err);
+  });
+
 
   // 保底：先給固定尺寸，避免初期 video.width/height = 0
   video.size(640, 480);
@@ -104,11 +179,128 @@ function setup() {
     camBlurLayer = createGraphics(bw, bh);
   };
 
-  bodyPose.detectStart(video, gotPoses);
 
   resetGame();
   applyLayout();
 }
+
+
+
+function updateFaceFromMediaPipe() {
+  if (!mpReady || !faceLandmarker || !video?.elt) return;
+  if (video.elt.readyState < 2) return; // HAVE_CURRENT_DATA
+
+  // 只在 video time 有變化時做一次推論（節省 CPU）
+  const t = video.elt.currentTime;
+  if (t === lastVideoTime) return;
+
+  const tsMs = performance.now(); // detectForVideo 需要 ms timestamp :contentReference[oaicite:5]{index=5}
+  const result = faceLandmarker.detectForVideo(video.elt, tsMs);
+  lastVideoTime = t;
+
+  const faces = result?.faceLandmarks;
+  if (!faces || faces.length === 0) {
+    // 沒偵測到臉：保留 fallback（mouse），並清掉 ellipse
+    faceVideoEllipse = null;
+    return;
+  }
+
+  const lm = faces[0]; // 第一張臉
+  const vw = video.elt.videoWidth;
+  const vh = video.elt.videoHeight;
+  if (!vw || !vh) return;
+
+  // ---- 1) Nose：用「鼻尖附近」幾個點取平均，比單點穩 ----
+  // 常見鼻尖/鼻樑附近點位（FaceMesh 468 indices）
+  const NOSE_IDXS = [1, 2, 4, 5, 19];
+  let nx = 0, ny = 0, ncount = 0;
+
+  for (const idx of NOSE_IDXS) {
+    const p = lm[idx];
+    if (!p) continue;
+    nx += p.x; ny += p.y;
+    ncount++;
+  }
+  if (ncount === 0) return;
+  nx /= ncount; ny /= ncount; // normalized 0..1 (image space)
+
+  // ---- 2) Face oval：用臉外框 indices 算 bounding box ----
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const idx of faceOvalIndices || []) {
+    const p = lm[idx];
+    if (!p) continue;
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  // 若外框沒資料，就退回用全部 landmark 的 bbox
+  if (!(maxX > minX && maxY > minY)) {
+    minX = 1; minY = 1; maxX = 0; maxY = 0;
+    for (const p of lm) {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    }
+  }
+
+  // 產出「video座標系」ellipse（你的 beauty 系統用的是 video coords）
+  const cxN = (minX + maxX) / 2;
+  const cyN = (minY + maxY) / 2;
+
+  const faceW = (maxX - minX) * vw;
+  const faceH = (maxY - minY) * vh;
+
+  // 你原本就希望「比臉小一點」：保留這個策略
+  const rx = (faceW * 0.50) * 0.90;
+  const ry = (faceH * 0.50) * 0.92;
+
+  faceVideoEllipse = {
+    cx: cxN * vw,
+    cy: cyN * vh,
+    rx,
+    ry
+  };
+
+  // ---- 3) 把鼻尖轉成你的 paddle 控制用 noseX（canvas X）----
+  // 你的畫面是 cover 模式 + 可選鏡像，所以要走同一套 transform
+  const tf = computeCoverTransform(vw, vh);
+  if (!tf) return;
+
+  let px = tf.dx + (nx * vw) * tf.sx; // canvas coord
+  if (mirrorCamera) px = width - px;
+
+  noseX = constrain(px, 0, width);
+  if (noseXSmoothed == null) noseXSmoothed = noseX;
+  noseXSmoothed = lerp(noseXSmoothed, noseX, NOSE_LERP);
+}
+
+
+
+function computeCoverTransform(vw, vh) {
+  if (!vw || !vh) return null;
+
+  const cw = width, ch = height;
+  const coverScale = Math.max(cw / vw, ch / vh);
+  const dw = vw * coverScale;
+  const dh = vh * coverScale * camYStretch;
+  const dx = (cw - dw) / 2;
+  const dy = (ch - dh) / 2;
+
+  return {
+    coverScale,
+    dx, dy, dw, dh,
+    sx: coverScale,
+    sy: coverScale * camYStretch
+  };
+}
+
+
+
+
+
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
@@ -367,90 +559,91 @@ function relayoutExistingBricks() {
 
 
 
-function gotPoses(results) {
-  poses = results || [];
-  if (!poses.length) return;
+// function gotPoses(results) {
+//   poses = results || [];
+//   if (!poses.length) return;
 
-  // pick best nose among persons, keep the corresponding pose
-  let bestPose = null;
-  let bestNose = null;
+//   // pick best nose among persons, keep the corresponding pose
+//   let bestPose = null;
+//   let bestNose = null;
 
-  for (const p of poses) {
-    const kps = p.keypoints || [];
-    const nose = kps.find(k => k.name === "nose");
-    if (!nose) continue;
-    if (nose.confidence >= NOSE_CONFIDENCE_MIN) {
-      if (!bestNose || nose.confidence > bestNose.confidence) {
-        bestNose = nose;
-        bestPose = p;
-      }
-    }
-  }
-  if (!bestNose || !bestPose) return;
+//   for (const p of poses) {
+//     const kps = p.keypoints || [];
+//     const nose = kps.find(k => k.name === "nose");
+//     if (!nose) continue;
+//     if (nose.confidence >= NOSE_CONFIDENCE_MIN) {
+//       if (!bestNose || nose.confidence > bestNose.confidence) {
+//         bestNose = nose;
+//         bestPose = p;
+//       }
+//     }
+//   }
+//   if (!bestNose || !bestPose) return;
 
-  const vW = video.elt?.videoWidth || video.width;
-  const vH = video.elt?.videoHeight || video.height;
+//   const vW = video.elt?.videoWidth || video.width;
+//   const vH = video.elt?.videoHeight || video.height;
 
-  // ---- Nose X mapping (handle mirror here) ----
-  const mappedX = mirrorCamera
-    ? map(bestNose.x, 0, vW, width, 0)   // mirror on canvas
-    : map(bestNose.x, 0, vW, 0, width);
+//   // ---- Nose X mapping (handle mirror here) ----
+//   const mappedX = mirrorCamera
+//     ? map(bestNose.x, 0, vW, width, 0)   // mirror on canvas
+//     : map(bestNose.x, 0, vW, 0, width);
 
-  noseX = constrain(mappedX, 0, width);
+//   noseX = constrain(mappedX, 0, width);
 
-  if (noseXSmoothed == null) noseXSmoothed = noseX;
-  noseXSmoothed = lerp(noseXSmoothed, noseX, NOSE_LERP);
+//   if (noseXSmoothed == null) noseXSmoothed = noseX;
+//   noseXSmoothed = lerp(noseXSmoothed, noseX, NOSE_LERP);
 
-  // ---- Face ellipse (video coords) ----
-  const kps = bestPose.keypoints || [];
-  const pick = (name) => kps.find(k => k.name === name && k.confidence >= NOSE_CONFIDENCE_MIN);
+//   // ---- Face ellipse (video coords) ----
+//   const kps = bestPose.keypoints || [];
+//   const pick = (name) => kps.find(k => k.name === name && k.confidence >= NOSE_CONFIDENCE_MIN);
 
-  const nose = pick("nose");
-  const le = pick("left_eye");
-  const re = pick("right_eye");
-  const lea = pick("left_ear");
-  const rea = pick("right_ear");
+//   const nose = pick("nose");
+//   const le = pick("left_eye");
+//   const re = pick("right_eye");
+//   const lea = pick("left_ear");
+//   const rea = pick("right_ear");
 
-  if (!nose && !(le && re)) {
-    faceVideoEllipse = null;
-    return;
-  }
+//   if (!nose && !(le && re)) {
+//     faceVideoEllipse = null;
+//     return;
+//   }
 
-  // center x: prefer eyes midpoint, fallback to nose
-  const cx = (le && re) ? (le.x + re.x) / 2 : nose.x;
+//   // center x: prefer eyes midpoint, fallback to nose
+//   const cx = (le && re) ? (le.x + re.x) / 2 : nose.x;
 
-  // a more "face-like" center y:
-  // - base: between eyes and nose
-  const eyeY = (le && re) ? (le.y + re.y) / 2 : (nose ? nose.y - 20 : 0);
-  const baseCy = nose ? (eyeY * 0.45 + nose.y * 0.55) : eyeY;
+//   // a more "face-like" center y:
+//   // - base: between eyes and nose
+//   const eyeY = (le && re) ? (le.y + re.y) / 2 : (nose ? nose.y - 20 : 0);
+//   const baseCy = nose ? (eyeY * 0.45 + nose.y * 0.55) : eyeY;
 
-  // width estimate:
-  // - ears distance is best; fallback to eye distance * factor
-  let baseW = null;
-  if (lea && rea) baseW = dist(lea.x, lea.y, rea.x, rea.y);
-  else if (le && re) baseW = dist(le.x, le.y, re.x, re.y) * 2.4;
+//   // width estimate:
+//   // - ears distance is best; fallback to eye distance * factor
+//   let baseW = null;
+//   if (lea && rea) baseW = dist(lea.x, lea.y, rea.x, rea.y);
+//   else if (le && re) baseW = dist(le.x, le.y, re.x, re.y) * 2.4;
 
-  // fallback if still null
-  if (!baseW) baseW = vW * 0.28;
+//   // fallback if still null
+//   if (!baseW) baseW = vW * 0.28;
 
-  // clamp + make it "a bit smaller than face"
-  baseW = constrain(baseW, vW * 0.14, vW * 0.48);
-  const faceW = baseW * 0.88;       // smaller (你要的「比臉小一點」)
-  const faceH = faceW * 1.25;       // typical face aspect
+//   // clamp + make it "a bit smaller than face"
+//   baseW = constrain(baseW, vW * 0.14, vW * 0.48);
+//   const faceW = baseW * 0.88;       // smaller (你要的「比臉小一點」)
+//   const faceH = faceW * 1.25;       // typical face aspect
 
-  // nudge center slightly upward (cover forehead, avoid too much neck)
-  const cy = constrain(baseCy - faceH * 0.03, 0, vH);
+//   // nudge center slightly upward (cover forehead, avoid too much neck)
+//   const cy = constrain(baseCy - faceH * 0.03, 0, vH);
 
-  faceVideoEllipse = {
-    cx: constrain(cx, 0, vW),
-    cy,
-    rx: faceW * 0.50,
-    ry: faceH * 0.50
-  };
-}
+//   faceVideoEllipse = {
+//     cx: constrain(cx, 0, vW),
+//     cy,
+//     rx: faceW * 0.50,
+//     ry: faceH * 0.50
+//   };
+// }
 
 
 function draw() {
+  updateFaceFromMediaPipe();  // 先更新 noseXSmoothed + faceVideoEllipse
   drawCameraBackground();
 
   updatePaddleFromNose();
@@ -567,24 +760,28 @@ if (beautyEnabled && camReady && faceVideoEllipse) {
     }
 
     // 2) Convert face ellipse (video coords) -> canvas coords using cover transform
-    const sx = coverScale;
-    const sy = coverScale * camYStretch;
+    const vw = video.elt.videoWidth;
+    const vh = video.elt.videoHeight;
+    const tf = computeCoverTransform(vw, vh);
+    if (!tf) return;
+
+    const { dx, dy, dw, dh, sx, sy } = tf;
 
     let cx = dx + faceVideoEllipse.cx * sx;
     let cy = dy + faceVideoEllipse.cy * sy;
     let rx = faceVideoEllipse.rx * sx;
     let ry = faceVideoEllipse.ry * sy;
 
+    // mirror correction（你原本的邏輯保留）
+    if (mirrorCamera) cx = width - cx;
 
-
-    // Mirror correction for ellipse CENTER (important)
-    if (mirrorCamera) {
-      cx = width - cx;
-    }
-
-    const FACE_SHRINK = 0.85;   // 0.75~0.92 自己調
+    // 你的 FACE_SHRINK 保留（整體縮小一點更自然）
+    const FACE_SHRINK = 0.85;
     rx *= FACE_SHRINK;
     ry *= FACE_SHRINK;
+
+    // 顯瘦：只在 X 軸再縮一點（比「整體縮小」更像瘦臉）
+    rx *= beautySlimX;
 
     // 3) beautyLayer：先把「模糊相機」畫上去（整張畫面）
     beautyLayer.clear();
